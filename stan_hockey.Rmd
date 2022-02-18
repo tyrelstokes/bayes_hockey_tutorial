@@ -1,0 +1,710 @@
+---
+title: "Stan Intro with Hockey"
+author: "Tyrel Stokes"
+output:
+  tufte::tufte_html: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE,message = FALSE, cache =TRUE)
+library(truncnorm)
+library(tufte)
+```
+
+# Bayesian Modeling and Stan
+
+This will be a short tutorial on Bayesian Modeling and Stan. I originally wrote this for some students that I was working with to be a companion to our meetings. Over the years I have slowly adapted it to fit other pedagodical needs mostly. It's a bit of a frankenstein at this point and I'm not entirely sure who the target audience would be. I suspect that this would be useful for someone with some previous exposure to bayes, but not necessarily a tonne, and looking to do some bayesian modelling in hockey or sports more generally. The code I give is specifically done in stan. Not much time is spent optimizing the stan code or really talking about best practices, but rather on more fundamental parts of bayesian modellings like choosing a prior, writing down a model, and generating interesting quantities from said models. Eventually, I will try and go through this and add more references for the theory and coding stuff I miss (which is a lot), but for now this will have to do.
+
+Anyway, I will start with some very high level intro to the idea behind bayesian analysis and then go into a few hockey specific examples.
+
+Bayesian statistics is intimitely connected with probability theory. A bayesian model can be broken into two pieces - the likelihood ($f(x|\theta)$) and the prior $f(\theta)$. The likelihood is no different than in a frequentist context, it is a description of the data generating process given some set of parameters $\theta$. The real difference is the prior. In bayesian statistics we treat the unknown parameters as though they are unknown random variables. Random variables have distributions. The goal is to express what we know (or perhaps our ignorance) in the form of a probability distribution. Once we have specified a likelihood and a prior we get the posterior distribution $f(\theta|x)$.
+
+$$f(\theta|x) = \frac{f(x|\theta)f(\theta)}{f(x)}$$
+The posterior distribution can be thought of as a summary of what we know about the parameters after seeing the data. It combines our apriori information (the prior) with information from the data. Or another way to say this is we update the information we have about the unknowns after seeing the data. In some sense the update that we do in the posterior can be seen as "optimal". This is called the dutch-book argument, but the a full-treatment of this is well beyond the scope of this article.
+
+
+```{marginfigure}
+In short the dutch-book argument says essentially that if we update our information in a way that doesn't follow the axioms of probability (in bayes that is how we use probability theory to get the posterior) then if we were to bet on that updated information in a particular way it would lead to sure losses. For details, this is a good, if dense, article about it [here](https://plato.stanford.edu/entries/dutch-book/#ProbAxioDutcBookTheo).
+```
+
+
+## So how do I write down a prior then???
+
+Okay, so if you are coming frequentist background but want to use bayes you have this extra step. You have to write down a prior in the form of a distribution. How do you actually do that in practice?
+
+
+There are many philosophies or approaches to how one should go about writing down a prior and like most philosophies they have different advantages and disadvantages and may be more useful in some scenarios than others. I won't spend too much time delineating all the different ideas, but just try to give you some intuition about how this generally works. One of the main schools of bayesian thought, subjectivists, would say that the prior should reflect everything we know *before* we see the data. In the case of hockey, this might reflect the fact that we know certain things about how the game work. We are pretty confident for example that Connor McDavid is better than Codi Ceci for example. We know this through a combination of the eye test, scouting, stats from previous years etc. We might want a prior distribution to reflect that if we were modelling the performance of these two players.
+
+```{marginfigure}
+I'm no philosopher, just a statistician with an interest in understanding what the hell is going on, but here here are a few of the names of bayesian schools of thought and a few references to get you started with Bayes schools of thought. 1. Subjectivists (good treatment in the flavour of difinetti and savage especially in Bayesian Theory (Bernardo and Smith). Lot's of time connecting subjective probabilities with decision theory.)
+2. So-called Logical School. This camp seems probability as a natural extension of logic to uncertain events. I believe Jaynes is the most famous here with his textbook "The Logic of Science" being one of the better resources on the topic
+3. Objective Bayes - Flavours of this seem to me to range from emphasizing very weak or non-informative priors (thus not subjective) all the way to using bayesian inference as a machine for frequentist goals. I can't find any great references for introduction although Berger seems to have written much making a case for it. Note also that the logical school might be considered a particular type of objective bayes. I don't think one has to accept probability as a formal extension of logic however to embrace objective bayes.
+
+
+```
+
+In my view, and the view of some other bayesians, the idea of writing down a prior more fundamentally similar to writing down a likelihood than disimilar. What I mean by this is that in order to write down a family of distributions which capture the data generating process (the likelihood) we need to know something about it. This is a way of expressing knowledge about the kind of data we believe possible and likely. From this perspective, there are two lessons.
+
+```{marginfigure}
+A good paper to read about this is ["The Prior Can Often Only be Understood in the Context of the Likelihood"](http://www.stat.columbia.edu/~gelman/research/published/entropy-19-00555-v2.pdf) by Gelman, Simpson and Betancourt  three developers of the stan modelling language.
+```
+
+1. If the likelihood and the prior are both expressing knowledge of the system, we shouldn't think of them as completely separate or unrelated. The exact priors and distributions we pick will only ever really make sense in the context of a likelihood.
+2. One philosophy on all this is the so called non-parametric bayes approach. One of the ways they think about this is that together, the prior and the likelihood are really just telling us what our *posterior* might look like and they each restrict or expand the kinds of posteriors we might get. (Note: posteriors are just functions with special properties. If we think of modelling it this way, our prior and likelihood just restrict the kind of functions (or shapes) the posterior can be. Some combinations will allow us to explore a broad range of functions, but we will need lots of data or we will have too much variation and fluctuation in the posteriors we get back.)
+
+Another common position is that instead of trying to be super precise and put as much information as possible in our prior, we should take a much weaker stance. That is the goal of our prior should be just to say something about the approximate scale. For example if we are modelling goals in a season as we will later, we know that player simply do not score thousands of goals per season nor do they score millions or billions. In fact every player in every season ever played has scored less than 100 goals. Instead of being super precise we could use our prior to calibrate our expectations, we expect something in the range of 0-100 goals. In practice we have more information than this, but from this perspective we err on the side of caution with injecting too much information in the prior and instead prefer to let the data speak. This is called a weakly informative prior and it's often the perspective that frequentists using bayes take since it is closer in philosophy to that perspective. I think this is a very reasonable route to go, it does, in my view, slightly complicate the interpretation of the posterior but that's more philosophical than anything else.
+
+Another thing I will say before getting into some more practical examples of how one might build priors is that in many cases our choice of priors won't matter very much. When we use "regular models" (think glms etc) and we have lots of information in the data the prior will get washed out by the data anyway. This is comforting, we wouldn't want our priors to dominate the data!
+
+
+```{marginfigure}
+However, the idea washes out the prior is often over-sold and it is sometimes inaccurately stated. This is beyond the scope of the article but when we deal with non-regular models - a class of models which includes heirarchical models, bayesian neural nets,models with latent effects (e.g. many large spatial models) etc - then our priors do play a role in the assymptotics and the amount of data we need to wash out prior effects can become very large. On the predictive scale, the effect does go away assymptotically, but the parameters which can yield the optimal predictive distribution are not unique. Unfortanely, heirarchical models are some of the key reasons why we might be attracted to using bayes in the first place.  So yes, often if we have lots of good data the prior shouldn't matter too too much, but even in these cases we can't ignore our responsibility to making reasonable and good choices all together. (See Algebraic Geometry and Statistical Learning Theory and Mathematical Theory of Bayesian statistics by Watanabe for details on the assymptotical of bayesian non-regular models. Warning: excellent books but very dense).
+```
+
+
+## Bradley-Terry Example
+
+Let's do a simple example to illustrate a few points.
+
+Let's consider a simple Braley Terry model for team outcomes. This is a really common comel for head-to-head competitions, it is closely related to the well known elo-model.
+
+Suppose there are $N$ teams each with an underlying strength $\beta_i$, $i \in \{1,2,\dots, N\}$. Let's say we want to express ignorance with the prior that in advance we don't know anything at all about the teams. A common idea is that of a  *flat prior*, which gives equal weight to all $\beta_i$ over the interval of support. In this case, it would be over the entire real line. 
+
+
+We have to be really careful about the scale of our parameters in our model. Expressing ignorance on one scale does not necesarily imply ignorance on another. In the Bradley-Terry model, the probability of a win is a non-linear function of the $\beta$'s. What this means is putting a flat prior directly over the $\beta$'s does not imply a flat prior over the win probabilities themselves. Here is a quick prior-simulation to explain this idea.
+
+In Bradley-Terry model's we know that $\beta =0$ is interpretable as league average. We will now simulate the prior probability of team 1 winning against a league average team with a flat prior on $\beta_1$.
+
+\begin{align}
+\beta_1 &\propto c\\
+P(\text{1 beats average} |\beta_1) &= \frac{1}{1 + \exp{(-\beta_1)}}
+\end{align}
+
+Where the first line is a way of representing a flat prior. In practice we can't quite simulate from such a prior, but be will simulate a uniform over a really wide interval.
+
+```{r}
+n <- 1000
+beta_1 <- runif(n, min = -10^7, max = 10^7)
+p_1 <- 1/(1+exp(-beta_1))
+
+hist(beta_1)
+hist(p_1)
+```
+When we plot the prior it is basically flat. But when we plot the probabilities it is not even flat at all. Our prior implies that team 1 will either definitely win or definitely lose against an average team! The refrain you are likely to hear if you dive more into bayesian statistics is that "flat priors are not invariant to transformation". A flat prior in one space is not necessary a prior over another space. Remember, priors only really make sense in the context of a likelihood. We want to be careful about how we are expressing our information. If we want to express ignorance over the win probability, we would try and express it directly over this space. How we do this in practice can be tricky and I won't spend much time, but below I will show a prior that approximately does this.
+
+```{r}
+n <- 10000
+beta_1 <- rnorm(n,0,1.6)
+
+
+
+p_1 <- 1/(1+exp(-beta_1))
+
+hist(beta_1)
+hist(p_1)
+```
+
+This is much closer to flat. The prior itself is concentrated around zero, but on the probability of a win scale it flattens out a bit. In practice, we can use a formal transformation to put a flat prior directly on the win scale and make it perfectly flat and not just an approximation like above (I won't go into the math here, but know it is possible.)
+
+In summary
+
+1. Priors only make sense in the context of a likelihood
+2. We want to express our knowledge on a scale that we can actually reason about. The $\beta$ scale is hard to think about. Probability of a win against an average team is something we can actually use what we know about sports to think about. It is easier to write down a probability distribution on this scale.
+
+Some bayesians would say that the outcome space is the most important space for your prior to make sense on, meaning if you simulate from your prior does the data make sense that you get back. This is called a prior predictive check and it is a useful tool to have when formulating our priors and working through a model. In naturally incorporates this idea that priors only make sense in terms of the specific likelihood. Let's try this for our two priors
+
+```{r}
+# Simulate a round robin tournament with 8 teams
+require(combinat)
+N <- 8
+teams <- c(1:N)
+schedule <- t(combn(teams,2))
+
+n <- 1000
+
+out_unif <- vector("list", length = n)
+out_normal <- vector("list", length = n)
+
+###################
+#### Bradley-Terry likelihood function
+
+BT <- function(beta1,beta2){
+  1/(1+ exp(beta2-beta1))
+}
+
+for(i in 1:n){
+  betas_flat <- runif(N, min = -10^7, max = 10^7) # simulate from the "flat prior"
+  betas_normal <- rnorm(N,0,1.6) # simulate from the prior which is not flat, 
+                                  #but closer to flat on the probability scale
+  
+  pred_flat <- apply(schedule,1,function(x){BT(betas_flat[x[1]],betas_flat[x[2]])}) # generates predictions using bradley terry model with first prior
+  pred_normal <- apply(schedule,1,function(x){BT(betas_normal[x[1]],betas_normal[x[2]])})
+  
+  out_unif[[i]] <- pred_flat
+  out_normal[[i]] <- pred_normal
+  
+}
+
+unif_prior_preds <- do.call(c,out_unif)
+normal_prior_preds <- do.call(c,out_normal)
+
+```
+
+```{r}
+
+hist(unif_prior_preds)
+
+```
+
+
+Once again, we see that these priors will basically always generate 0 or 1 predictions. This doesn't make a lot of sense and does not correspond to what we know about sports teams. Good teams can lose to bad teams, the outcomes aren't forgone conclusions. That's an example of knowledge that we have in advance that we can harness to make a better prior.
+
+
+```{r}
+hist(normal_prior_preds)
+```
+
+
+This is similar to the other check we did, but more of a U-shape. Fixing the value of the other team to be 0 is not the same as simulating over the distribution of teams. This definitely more reasonable, but still probably not the best prior. This doesn't correspond to a flat prior. And it's probable that in reality we know a little more about the outcome than that. We probably expect more of a bell curve over predicted probabilities. This prior predictive exercise revealed that definitely the first prior is not a good idea. The second one depending on the application likely should be refined as well to either reflect a proper flat prior over this space, or more of a bell-curve. Again which one is better depends on the specifics of the application.
+
+
+## Poisson Goal Model
+
+We have learned a bit about priors and prior predictive distributions.
+
+Goals scoring rates are sometimes modelled as poisson. In practice, in many sports it has been shown that the underlying of a poisson don't quite hold. Specifically, one of the implications of a poisson distribution is that the goal scoring rate should be independent across non-overlapping segments of time. And for segments of the same length, the rates should be the same.
+
+In soccer for example, there tends to be more scoring near the end of the game which violates this assumptions. In most sports, knowing the number of goals for each team will help you predict future scoring in that game also violating these assumptions. For individual players we might expect small dependencies between games or different rates throughout the course of the season
+
+That being said, the poisson is still a reasonable approximation for simple purposes to model goal scoring.
+
+```{marginfigure}
+For nerds, poisson regression can be seen as a robust way to model counts since it is consistent under correct conditional mean. What this means is that even if the data doesn't follow a poisson distribution in the limit we can recover the correct parameters in some sense as long as the model we propose for the mean is correct. Typically poisson means are modelled on the multiplicative scale, so if we think that family can reasonably recover the conditional mean that could be another way to justify using this distribution. It is even true for non-count data with support in $[0,\infty)$, which is very cool. See the count data section of Economic Analysis of Cross Section and Panel Data by Wooldridge for more about this!
+```
+One of the nice properties about a poisson is that if $X_1, X_2, \dots, X_n$ are distributed $X_i \sim Pois(\lambda_i)$ then the sum of those random variables are also poisson, $\sum_{i=1}^n X_i \sim Pois( \sum_{i=1}^n\lambda_i)$.
+
+Here we are going to try to model individual player goal scoring. But let's say we only have access to season level data. One issue with data like that is we want a goal scoring rate, per game, but players might play different amounts of games in each season. But if we imagine that each player has some goals scoring rate per game $\lambda_j$ and the player plays some numer of games $Gp$ using the properties of the poisson above we know that we can model the goals in a season $k$ by player $j$ as:
+
+$$Goals_{jk} \sim Pois(Gp_k\times \lambda_j)$$
+
+And at the aggregate level, $Gp_k$ is just a known constant! So we have a likelihood. The only other thing we need is a goal rate.
+
+Let's pretend we are modelling Connor McDavid. What do we know about goal rates? Well, the record for goals in a season is 92 in a 80 goal season. And really there have been extremely few seasons even near the rate of 1 goal per game. Most of those seasons happened in the 80s and are unlikely to happend again unless something changes in the game drastically. So the probability of the goal scoring rate being more than 1 is quite small and our prior should probably reflect that. Similarly, we know that it is impossible to have a goal scoring rate less than 0, our prior must also reflect that. So what we want is a prior over the interval $[0, \infty)$ where the majority of the weight is in $[0,1]$. Now thinking about Connor McDavid, he's pretty good. It would be weird if he was health for a whole year and scored less than say 10 goals. Similarly, he's more of a passer than a scorer and it would be pretty surprising if he scored more than say 60 goals in a season. But not impossible For ease, let's call $80 \approx 82$. Let's say I'm 80 percent sure that connor's goal scoring rate should be between $[\frac{10}{80},\frac{60}{80}] = [\frac{1}{8}, \frac{3}{4}] = [0.125,0.75]$ and I expect things to be concentrated somewhere in the middle. One choice to try and incorporate all that knowledge is a truncated normal distribution. It's similar to a normal but you can define a lower bound or upper bound. In this case, we want a lower bound of zero. We don't need to specify an upper bound, just want the probability to decay fast, which is what a normal does anyway.
+
+So we want it to be some truncated normal, but we have to pick the mean and variance. Let's ignore the fact that it is truncated for a second to use the nice properties of a normal directly. Let's set the mean, the mean of that interval we said the truth is likely to lie, $[\frac{1}{8}, \frac{3}{4}]$. So $\mu = \frac{\frac{1}{8} = \frac{3}{4}}{2} = \frac{7}{16}$.
+
+Now we just want to find the standard deviation $\sigma$. We said we are roughly 80% confident the truth lies in $[\frac{1}{8}, \frac{3}{4}]$. So we want $P(\frac{1}{8} \leq \lambda \leq \frac{3}{4}) \approx 0.8$ If $\lambda$ is normal then we can do some standard manipulations:
+
+\begin{align*}
+P(\frac{1}{8} \leq \lambda \leq \frac{3}{4}) &= P(\frac{\frac{1}{8} - \mu}{\sigma} \leq \frac{\lambda - \mu}{\sigma} \leq \frac{\frac{3}{4} - \mu}{\sigma}\\
+&= \Phi(\frac{\frac{3}{4} - \frac{7}{16}}{\sigma}) - \Phi(\frac{\frac{1}{8} - \frac{7}{16}}{\sigma})
+\end{align*}
+
+We want to find a $\sigma$ that makes the above expression approximately $0.8$ Let's do that numerically in R.
+
+```{r}
+# Make a function for the above expression
+require(ggplot2)
+prob_lambda <- function(sigma,mu){
+  pnorm((0.75 - mu)/sigma) - pnorm((0.125 - mu)/sigma)
+}
+
+mu <- 7/16
+
+## Now make a bunch of candidate sigmas
+
+sigmas <- c(1:1000)*0.001 # we know it should be between 0 and 1 for sure.
+
+evaluate <- prob_lambda(sigmas,mu)
+
+df <- data.frame(sigmas, evaluate)
+
+ggplot(df,aes(x = sigmas, y=evaluate)) + geom_hline(yintercept = 0.8) +geom_point()
+
+```
+
+
+It looks like somewhere around $\sigma = 0.25$ we would get 0.8 likely to fall in the interval we said was reasonable. We could take this value directly. We could inflate it a bit. We could also use it as a hyper-prior, which is usually a better option if we are worried about this influencing our analysis too much. In this case, the model is so simple that it likely won't matter too much, so just for practical purposes let's take 0.25 as given.
+
+So all together, this is our probabilistic model for just Connor McDavid in season $k$:
+
+\begin{align*}
+Goals_{McDavid,k} &\sim Poisson(Gp_{McDavid,k}\times \lambda_{McDavid})\\
+\lambda_{McDavid} &\sim TruncNormal(\frac{7}{16}, \frac{1}{4})[0,\infty]
+\end{align*}
+
+```{marginfigure}
+
+Note: Some readers here will notice that I used a truncated normal and not an actual normal in the end! This is because we need the lambda parameter to be positive. Technically, this makes the math we did above wrong. As long as the mean is far from the lower boundary (0) with respect to the standard deviation, the calculations we did should make reasonable approximations. At the end of the document you will find some code which to do this in a more principled way by jointly optimizing $(\mu,\sigma)$ for the desired probability and mean using the truncated normal distribution. 
+
+When we optimize this way $(\mu_{opt},\sigma_{opt}) = (0.396,0.274)$ which is very close to what we using the more illustrative approximation in the main text. In other cases though the approximation might not work and this general strategy above will be more appropriate. I chose the other way largely for illustrative purposes. For some readers the stuff in the margin may be easier to understand anyway.
+
+```
+
+Now below here is the relevant Stan gcode to express the same model.
+
+
+
+
+```{stan output.var= "poisson_goals"}
+
+data {
+  int seasons; //int means Integer. This is just a declaration. 
+  //I'm saying expect some integer called seasons.
+  //This represents the number of seasons.
+  int Gp[seasons]; //Another integer. 
+  //It's the number of games played and it has the
+  //length of season. 
+  //So a vector of integers representing games played
+  int Goals[seasons]; //number of goals in each season
+
+}
+parameters {
+  real<lower =0> lambda; 
+  // This is a super simple model with one parameter lambda. Notice the lower =0. 
+}
+
+model {
+
+  for(i in 1:seasons){
+  Goals[i] ~ poisson(lambda*Gp[i]);
+  }
+  
+  lambda ~ normal((7.0/16.0),0.25)T[0.0,]; 
+  // The T[0.0,] declares the lower bound to be 0 and no upper bound. 
+  //There are other ways to do this.
+  
+}
+
+
+```
+
+
+Now that we have a model written, we can run it with some data.
+
+```{r, results = 'hide'}
+
+set.seed(97)
+require(rstan)
+Gp <- c(45,82,82,78,64)
+goals <- c(16,30,41,41,34)
+McDavid_data <- list(seasons = length(Gp),
+                     Goals = goals, Gp = Gp)
+
+fit <- sampling(poisson_goals,data = McDavid_data,
+                iter = 2000, chains =2, refresh = 1000) 
+#Chains is the number of MCMC chains, iterations is the number of samples we use in each chain
+
+
+```
+
+Above fits the model. I made a little note about chains and iterations. I won't go into it here, but we have to set some parameters for the Markov Chain Monte Carlo (MCMC) algorithm. You don't need to know the specifics at this point, but the idea is that we want the posterior distribution that's the whole point of a bayesian model. But in practice, rarely when we jam a prior and a likelihood together will that create a "nice" distribution, meaning one that we know the analytic form of or one we can sample from. MCMC refers to a class of algorithms that can take more or less arbitrary priors and likelihoods and even if we don't know the name or form of the posterior we can get samples from it. Stan takes care of all of the details for you. If you have more questions about this just let me know.
+
+Now let's plot the posterior distribution of the $\lambda$ parameter. That is now that we have seen the data, what values of $\lambda$ is compatible with what we though before and the evidence we collected with the data.
+
+```{r}
+lambdas <- data.frame(lambda = extract(fit,pars="lambda"))
+ggplot(lambdas,aes(lambda)) + geom_density()
+```
+Here is our estimated posterior for Connor McDavid's goals scoring. Further we can find the *Posterior Mean*, this is the value of lambda we expect on average given our data and prior. Below we will look at the summary (inlcuding posterior mean).
+
+```{r}
+summary(fit)[1]
+```
+
+The posterior mean is around 0.46. So We would expect Connor to score a little less than half a goal a game. And then at the lowest end, we would expect the tue value to be in the interval [0.396, 0.540] with probability 0.95.
+
+## Making the model more realistic
+
+The last model works fine as a retrospective model, to get an estimate of average goal scoring rate in the past, but it might not be the best predictive model. Part of this is that we would expect goal scoring rates to change over time as he gets better or worse or focuses more on play-making or shooting. We can model this directly. The magic of a bayesian approach that is more difficult in a frequentist approach is we can share information from one season to the next in a more principled way.
+
+So now our likelihood will be modified a tiny bit for each player j in season k.
+
+$$Goals_{jk} \sim Pois(Gp_k\times \lambda_{jk})$$
+The real change is the priors. One way to model the priors is in an auto-regressive process. The idea is that the goal scoring rate in year $k$ should be somewhat near $k+1$ and $k+1$ should be somewhat near $k+2$, but the farther the seasons are apart the more flexibility there should be for the parameters to be different from each other. One way to express this is:
+
+\begin{align*}
+\lambda_{j,(k+1)} \sim N(\lambda_{j,k}, \sigma_j), \quad k = 2,3,4,5,...,
+\end{align*}
+
+One way to say this is if we had to guess our best guess for the next year would be whatever last years parameter was. How confident we are it is going to be near that best guess is represented by $\sigma_j$ which is an individual level variance. If we did this model with more than one player, we would let them have their own variance term. Some players will be more consistent than others. Some we will have more information about than others, so each should have their own variance parameter to reflect that.
+
+Notice however that the above only worked for the 2nd season onward that a player plays. In their first season we could use the same prior that we had before or something similar.
+
+We aren't done though. We introduced a new parameter, $\sigma_k$ and we need to write down a prior for it. The plot we made earlier about the $\sigma$ parameter was for $[\frac{1}{8}, \frac{3}{4}]$ but the calculations are valid for any interval of size $\frac{5}{8}$.
+
+Using the plot $\sigma_k = 0.2$ would correspond to a 0.88 probability of being +/- $\frac{5}{16} = 0.3125$ of the goal rate in the previous season. Thus a 12% chance of a more extreme change happening. In terms of a 82 game season that would be +/- 25 goals. That seems pretty reasonable. By the time you get under $\sigma_k = 0.1$ it is more or less guaranteed that you will be within 25 goals. All the way up to $\sigma_k = 0.4$ and the probability of being within 25 goals of last year is aroun 0.55. Almost as likely as not.
+
+So one way to write this down would be to center around 0.2 or 0.25 and we want the bulk of our weight of our distribution to be between say 0.1 and 0.4. If we wanted to, we could make this interval larger. That would be making the prior more "flat" on the outcome space. Or we could make it tighter to reflect confidence. In this case, the model is still simple and we have lots of data so it's unlikely to make a big difference. And this is a hyper-prior and not a prior. It's a parameter modeling another parameter. In general our results are less sensitive to hyper-priors. In fact, if we are worried about a prior having too much influence or we are worried about being wrong, sometimes adding a hyper-prior is a good strategy.
+
+Let's do an experiment to test it. Let's consider two regimes.
+
+1. Confident regime. Let's say that we are between 80-95% sure that Connor's true underlying scoring rate will be +/- 25 goals. This translates to a prior on $\sigma_k$ something like:
+
+$$\sigma_k \sim TruncNormal(0.2,0.025)$$
+2. Not so confident. Allows more flexibility between seasons. Say we are between 50 and 95% sure that the underlying scoring rate will be +/- 25 goals per full season. Say
+
+$$\sigma_k \sim TruncNormal(0.25,0.08)$$
+
+Let's write a stan model that adds the new prior structure and lets us specify the hyper-prior parameters in the data. That way we don't have to write two different models or change the model itself, just modify the inputs.
+
+
+```{stan output.var= "poisson_goals2"}
+
+data {
+  int seasons; 
+  int Gp[seasons]; 
+   int Goals[seasons]; 
+  real mean_sigma;
+  real sd_sigma;
+}
+parameters {
+  vector<lower =0>[seasons] lambda;
+  real<lower =0> sigma;
+}
+
+model {
+
+  for(i in 1:seasons){
+  Goals[i] ~ poisson(lambda[i]*Gp[i]);
+  }
+  
+  lambda[1] ~ normal((7.0/16.0),0.25)T[0.0,];
+  
+  for(k in 2:seasons){
+   lambda[k] ~ normal(lambda[k-1], sigma);
+  }
+  
+  sigma ~ normal(mean_sigma, sd_sigma)T[0.0,];
+  
+}
+
+
+```
+
+
+```{marginfigure}
+The model to the left is not optimized in several important ways and instead was written for clarity. I tried to match the model to the probabilistic model in what I believed to be the clearest way possible. Unfortunately, not only will this model be slow but it is prone to something called divergences. I have rewritten this model to be more efficient and less prone to divergences at the end of the file. The model at the end is technically slightly different probabilistically but it accomplishes the same idea and flavour of model. If you are trying to understand how the probability relates to the code, this code should be more useful. If, however, you are looking to build off of the model I strongly recommend looking at the model at the end of the file as well peaking at the reference listed there about reparametrizations in stan!
+```
+
+
+
+Now let's run the two regimes.
+
+```{r,results = 'hide'}
+
+set.seed(97)
+require(rstan)
+Gp <- c(45,82,82,78,64)
+goals <- c(16,30,41,41,34)
+McDavid_data1 <- list(seasons = length(Gp),
+      Goals = goals, Gp = Gp, mean_sigma = 0.2, sd_sigma = 0.025)
+McDavid_data2 <- list(seasons = length(Gp),
+      Goals = goals, Gp = Gp, mean_sigma = 0.25, sd_sigma = 0.08)
+
+
+fit1 <- sampling(poisson_goals2,data = McDavid_data1, 
+      iter = 5000, chains =2, control = list(adapt_delta = 0.99),refresh = 2500) 
+fit2 <- sampling(poisson_goals2,data = McDavid_data2,
+      iter = 5000, chains =2, control = list(adapt_delta = 0.99),refresh = 2500) 
+
+
+```
+
+Let's just look at the parameter in the last season and compare the two.
+
+```{r}
+lambdas1 <- data.frame(lambda = extract(fit1,pars="lambda"), Model = "Confident")
+lambdas2 <- data.frame(lambda = extract(fit2,pars="lambda"), Model = "Flexible")
+lam_combn <- rbind(lambdas1,lambdas2)
+ggplot(lam_combn,aes(lambda.lambda.5)) + geom_density(aes(fill = Model), alpha = .3)
+```
+
+They are pretty much the same. This won't always be the case, but when we have decent data and decent theory (in this game we have a pretty clear idea about what is a reasonable number of goals to score) exactly how we specify that knowledge won't completely change our inferences. If we had a situation where the likelihood was less interpretable or maybe not so applicable and then our domain knowledge was non-existent or really hard to express probabilistically our choices might make more of a difference, especially if the data is of low quality or information content.
+
+## Generating Quantities
+
+So now we have a bit of an idea about how to make a Bayesian model, in particular how we might specify priors and how to use priors to let us share information between parameters, we will talk about what we can do with our posterior distribution. So far the posterior is just a plot and plots are cool and it can buy us a lot more than a point estimate and some confidence intervals, but what can we do with this exactly?
+
+One thing we can do is get the posterior predictive distribution! The posterior predictive distribution allows us to generate data using the information of the posterior. It is a distribution which represents all of the uncertainty we have in the unknown parameters as well as the uncertainty in the random data generating process. We can also generate functions of that predictive data which might be interesting to us. The posterior predictive distribution is written as:
+
+\begin{align}
+p(x_{new}|x) = \underset{\theta}{\int} f(x_{new}|\theta)f(\theta|x)d\theta
+\end{align}
+
+Where $f(\theta|x)$ is our posterior and $f(x_{new}|\theta)$ is the likelihood evaluated at some theta. To estimate this distribution, what we do is take all of the posterior draws, for each one generate a data point from our likelihood at that those parameters. Repeat that for each draw of the posterior and then average over all of our draws. So in our Connor McDavid case we could generate thousands of "seasons" of simulated seasons, We could simulate the seasons in the past to get a sense of the plausible number of goals he might have scored. Or we could easy go into the future and simulate seasons in the future. They will be simulated from the posterior which again reflects all of our knowledge in the prior plus the data.
+
+With this particular model, we can do one better. Remember the poisson distribution has this property that a sum of independent poisson is poisson. As a result our parameters $\lambda_1,\dots, \lambda_5$ are interpretable as game level scoring rates. This means that we can simulate seasons not just at the aggregate level, but at the individual game level. I used this recently to figure out the posterior probabilities of having a certain number of career hat-tricks. The way we do that is for each posterior draw simulate every game in Connors career. Then we can save the number of hattricks. Since the posterior draws occur in accordance to their likelihood. If we just count up the proprotion of dras he gets a certain number of hattricks, that will estimate the posterior probability of getting that number of hattricks.
+
+Below is the stan code. We just have to add two parameter blocks. 1 is a transformation of the data. The other is the generated quantities block. All of the rest is exactly the same as the last model.
+
+
+```{stan output.var= "poisson_goals3"}
+
+data {
+  int seasons;
+  int Gp[seasons];
+  int Goals[seasons];
+  real mean_sigma;
+  real sd_sigma;
+}
+
+transformed data{
+ int games = sum(Gp); 
+ int gots[seasons]; 
+ gots[1] = Gp[1];
+ for(i in 2:seasons){
+   gots[i] = gots[i-1] + Gp[i];
+ }
+}
+
+parameters {
+  vector<lower =0>[seasons] lambda;
+  real<lower =0> sigma;
+}
+
+model {
+
+  for(i in 1:seasons){
+  Goals[i] ~ poisson(lambda[i]*Gp[i]);
+  }
+  
+  lambda[1] ~ normal((7.0/16.0),0.25)T[0.0,]; 
+  
+  for(k in 2:seasons){
+   lambda[k] ~ normal(lambda[k-1], sigma);
+  }
+  
+  sigma ~ normal(mean_sigma, sd_sigma)T[0.0,];
+  
+}
+generated quantities{
+  
+  
+  
+  vector[games] goals;
+  int hatrick = 0;
+  
+
+  
+  for(k in 1:Gp[1]){
+    goals[k] = poisson_rng(lambda[1]);
+    if(goals[k] >= 3){
+    hatrick += 1;
+  }
+  }
+  
+  // Below simulates the games in seasons 2 through last season. 
+  //It's the same as above in idea, but has more complicated indexing
+  // There is probably an easier way to code all this,
+  //but this is what I came up with at the time
+  
+  for(i in 2:seasons){
+    for(j in 1:Gp[i]){
+    
+      goals[(gots[(i-1)]+j)] = poisson_rng(lambda[i]);
+      
+      if(goals[(gots[(i-1)]+j)] >= 3){
+        hatrick +=1;
+        
+      }
+    }
+  }
+ 
+  
+}
+
+
+```
+
+
+
+Now let's run this model and plot the posterior hattrick probabilities
+
+
+```{r,results = 'hide'}
+
+set.seed(97)
+require(rstan)
+Gp <- c(45,82,82,78,64)
+goals <- c(16,30,41,41,34)
+McDavid_data2 <- list(seasons = length(Gp),
+          Goals = goals, Gp = Gp, mean_sigma = 0.25, sd_sigma = 0.08)
+
+
+fit3 <- sampling(poisson_goals3,
+  data = McDavid_data1, iter = 5000, chains =2, control = list(adapt_delta = 0.99),refresh = 0) 
+ 
+
+
+```
+
+
+
+```{r}
+hat_samples <- extract(fit3,pars = "hatrick")
+hat_samples <- hat_samples$hatrick
+hat <- data.frame(samples = (table(hat_samples)/5000))
+names(hat) <- c("hat_tricks", "Post_Prob")
+
+ggplot(data = hat, aes(x = hat_tricks, y= Post_Prob )) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  geom_vline(xintercept = 6, size =1) 
+ # scale_fill_manual(values = c("#00AFBB", "#FC4E07"))
+```
+
+The vertical line is the number of hattricks that he actually scored. So you can see that he has scored near the middle of the posterior distribution. These definitely look reasonable. Remember though that the credibility of this model is related to the prior and the likelihood. Our priors are pretty good and we showed that perturbations didn't matter too much. However, we did not really investigate exactly how reasonable the poisson is even if it is likely a good approximation. My suspicion is that it is a better model at the aggregate level than at the game level. With more data, like opponent data, rest, teammates, pp times, etc we could improve this model. For the purposes of getting a solid idea of goal scoring rates per game and simulating hattricks this model is probabily good enough. It's when we want to make really strong claims with the model that we have to be careful.
+
+# Extra code
+
+In this section I am going to share some extra code referenced in the margin notes. Like I said before much of the code in the main text was intended to be pedagogical rather than otpimal. The most egregious cases of sub-optimality are listed below and hopefully partially fixed.
+
+## Optimized Truncated Normal prior parameters
+
+First, code to optimize $(\mu,\sigma)$ for the truncated normal. Suppose we are trying to find the parameters which satisfy the following for our prior a truncated normal prior for $\lambda$:
+
+\begin{align*}
+E[\lambda] &= \mu^\star\\
+P(lb < \lambda < ub) &= p^\star
+\end{align*}
+
+Then the following code can get you the parameters which best match any such prior according to mean squared error 
+
+
+```{r}
+trunc_fun <- function(mu, sigma,a,b, lb,ub){
+# mu is the location parameter of the truncated normal
+#sigma is the dispersion parameter of the trunc normal
+  #(a,b) is the support of the truncated normal, (0,\infty) in our example
+#lb is the lower bound of the range we are placing our prior on (1/8) in example
+#ub: upper bound  (6/8) in our example
+  
+ pout <- truncnorm::ptruncnorm(ub,a = a, b =b,mean =mu,sd = sigma) -
+   truncnorm::ptruncnorm(lb,a = a, b =b,mean =mu,sd = sigma) 
+ # Above is the probability of being in the desired interval
+  
+ tmean <-  truncnorm::etruncnorm(a =a, b = b, mean = mu, sd = sigma)
+ ## The truncated mean
+ 
+ c(pout,tmean)
+  
+}
+
+
+
+trunc_opt <- function(x){
+ y <-  trunc_fun(x[1],x[2],a,b,lb,ub)
+ out <- mean((y - c(desired_prob,desired_mean))^2)
+ out
+}
+
+###################
+#####################
+
+## Now I will use those functions to optimize a mu and sigma
+desired_prob <- 0.8
+desired_mean <- 7/16
+a <- 0
+b <- Inf
+lb <- 1/8
+ub <- 3/4
+
+est_params <- optim(par = c(0.5,0.5),fn = trunc_opt)
+
+est_params
+```
+
+
+## More Optimized Stan file
+
+In the main text, the stan files were mostly illustrative and I tried to write them to be most easily understood from a probabilistic standpoint. They were not optimized for performance and, in fact, the heirarchical programs are likely to perform poorly due to divergences. Here I give a slightly more optimized version of the later model which may be useful to those building off of it. I do not claim it to be perfectly optimized to be clear. The main changes are vectorization and reparametrizing the heirarchical lambda model to be non-centered. This helps resolve undesirable geometries in the posterior (See [this](https://mc-stan.org/docs/2_18/stan-users-guide/reparameterization-section.html) for more information about reparametrization)
+
+
+```{stan output.var= "poisson_opt"}
+
+data {
+  int seasons; 
+  int Gp[seasons]; 
+  int Goals[seasons]; 
+  real mean_sigma;
+  real sd_sigma;
+}
+
+parameters {
+  vector[(seasons-1)] lambda_0;
+  real lmean_0;
+  real<lower =0> sigma;
+}transformed parameters{
+
+vector[seasons] lambda;
+
+lambda[1] = exp(lmean_0);
+
+
+
+
+for(i in 2:seasons){
+
+  
+lambda[i] = lambda[i-1]*exp(lambda_0[i-1]*sigma);
+  
+}
+
+}
+model {
+
+vector[seasons] lgp;
+
+for(i in 1:seasons){
+  lgp[i] = lambda[i]*Gp[i];
+}
+
+ 
+  Goals ~ poisson(lgp);
+  
+  
+  lmean_0 ~ normal(log((7.0/16.0)),0.5); 
+  lambda_0 ~ normal(0,1);
+  
+
+  sigma ~ normal(mean_sigma, sd_sigma)T[0.0,];
+  
+}
+generated quantities{
+  
+  
+  
+  int pred_goals[seasons]; 
+
+for(i in 1:seasons){
+pred_goals[i] = poisson_rng(lambda[i]*Gp[i]);
+}
+  
+}
+
+
+
+
+
+```
+
+
+I changed the scale of the model to the log scale. I didn't do a proper transformation of the priors we set on them, so take that into account. The supplied hyper-parameters should take this into account if you plan on using this model for anything!
+
+```{r,results = 'hide'}
+set.seed(97)
+
+Gp <- c(45,82,82,78,64)
+goals <- c(16,30,41,41,34)
+McDavid_data3 <- list(seasons = length(Gp), Goals = goals, Gp = Gp, mean_sigma = 0.1, sd_sigma = 0.1)
+
+
+fit4 <- sampling(poisson_opt,data = McDavid_data3, iter = 5000, chains =2, control = list(adapt_delta = 0.85),refresh = 0) 
+ 
+```
+
+```{r}
+summary(fit4)[1]
+```
+
+
